@@ -269,12 +269,17 @@ static int parse_packet(Server *srv, Conn *conn)
             ta->srv = srv;              // 阶段5：业务回包需要服务器上下文
             ta->conn_id = conn->conn_id; // 阶段5：用唯一ID标识回包目标连接
             ta->pkg = pkg;
-            // 丢进线程池；入队失败就地释放，避免内存泄漏
-            if (threadpool_add_task(srv->pool, handle_packet, ta) != 0)
+            // 丢进线程池：必须用非阻塞try版本——生产者是epoll主线程，
+            // 阻塞等队列空位会让所有连接的IO和心跳全部停摆（单Reactor大忌）。
+            // 入队失败说明业务处理不过来，对该连接做背压：直接断开，
+            // 由客户端重连重发，避免丢包后协议状态错乱
+            if (threadpool_try_add_task(srv->pool, handle_packet, ta) != 0)
             {
-                log_write(srv->log, "client fd=%d add task failed", conn->fd);
+                log_write(srv->log, "client fd=%d task queue full, backpressure close", conn->fd);
                 free(pkg);
                 free(ta);
+                conn_close(srv, conn);
+                return -1;
             }
         }
         else
@@ -739,8 +744,15 @@ void server_run(Server *srv)
     // 注意：不能在这里关连接——工作线程还在跑，必须等main里
     // threadpool_destroy返回（所有工作线程已退出）后才能安全释放连接
     on_wakeup(srv);
-    for (Conn *c = srv->conn_list; c; c = c->next)
-        conn_flush(srv, c);   // 把各连接写缓冲里剩余数据尽量发完
+    // 先保存next再flush：conn_flush可能因发送错误关闭并free当前连接，
+    // 若释放后再取c->next就是use-after-free（与check_heartbeat同理）
+    Conn *c = srv->conn_list;
+    while (c)
+    {
+        Conn *next = c->next;
+        conn_flush(srv, c);   // 把各连接写缓冲里剩余数据尽量发完（内部可能关闭c）
+        c = next;
+    }
 
     log_write(srv->log, "server main loop stopped");
 }

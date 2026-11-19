@@ -137,6 +137,33 @@ int threadpool_add_task(ThreadPool *pool, void (*func)(void *), void *arg)
     return 0;
 }
 
+// 非阻塞入队：队列满/已关闭立即返回-1，绝不cond_wait。
+// epoll主线程（生产者）必须用本版本——主线程阻塞等队列空位会让
+// 所有连接的IO和心跳停摆；失败由调用方对连接做背压（暂停读/断开）
+int threadpool_try_add_task(ThreadPool *pool, void (*func)(void *), void *arg)
+{
+    if (!pool || pool->shutdown == 1)
+        return -1;
+
+    pthread_mutex_lock(&pool->mutex);
+    if (pool->shutdown == 1 || pool->queue_size == pool->queue_capacity)
+    {
+        pthread_mutex_unlock(&pool->mutex);
+        return -1;
+    }
+
+    // 放到队尾
+    pool->task_queue[pool->queue_rear].func = func;
+    pool->task_queue[pool->queue_rear].arg = arg;
+    pool->queue_rear = (pool->queue_rear + 1) % pool->queue_capacity;
+    pool->queue_size++;
+
+    // 队列不为空，唤醒一个工作线程
+    pthread_cond_signal(&pool->not_empty);
+    pthread_mutex_unlock(&pool->mutex);
+    return 0;
+}
+
 void threadpool_destroy(ThreadPool *pool)
 {
     if (!pool)

@@ -18,8 +18,10 @@ int main(void)
         printf("log init failed\n");
         return -1;
     }
-    // 2. 创建线程池：4个工作线程，队列最多8个任务
-    ThreadPool *pool = threadpool_create(4, 8);
+    // 2. 创建线程池：4个工作线程，队列容量1024。
+    // 加大队列降低突发流量下打满的概率；即便打满，主线程也是
+    // 非阻塞try入队+断开背压，绝不阻塞等待（见server.c拆包处）
+    ThreadPool *pool = threadpool_create(4, 1024);
     if (!pool)
     {
         log_destroy(log);

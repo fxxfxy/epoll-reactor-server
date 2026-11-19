@@ -48,13 +48,23 @@ typedef struct threadpool
 ThreadPool *threadpool_create(int thread_num, int queue_cap);
 
 /**
- * @brief  向线程池添加任务（生产者）
+ * @brief  向线程池添加任务（生产者，阻塞版）
+ *         队列满时会阻塞等待空位。epoll主线程禁止使用本接口，
+ *         必须用threadpool_try_add_task，否则主线程一卡，全部IO停摆
  * @param pool 线程池
  * @param func 任务回调函数
  * @param arg  传给回调的参数
  * @return 0成功，-1失败
  */
 int threadpool_add_task(ThreadPool *pool, void (*func)(void *), void *arg);
+
+/**
+ * @brief  向线程池添加任务（非阻塞try版）
+ *         队列满或线程池关闭时立即返回-1，绝不阻塞等待。
+ *         epoll主线程必须用本版本；失败时由调用方做背压（暂停读/断开连接）
+ * @return 0成功，-1失败（队列满/已关闭/参数非法）
+ */
+int threadpool_try_add_task(ThreadPool *pool, void (*func)(void *), void *arg);
 
 /**
  * @brief  销毁线程池，等待所有线程退出、释放资源
